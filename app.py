@@ -7,8 +7,12 @@ from typing import Optional
 
 import numpy as np
 from PIL import Image
-from tensorflow.keras.models import Model, load_model
-from tensorflow.keras.preprocessing import image
+
+# Use tflite-runtime for inference
+try:
+    from tflite_runtime.interpreter import Interpreter
+except ImportError:
+    from tensorflow.lite.python.interpreter import Interpreter
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -16,18 +20,19 @@ logger = logging.getLogger(__name__)
 
 class Config:
     """Application configuration."""
-    MODEL_PATH = os.path.join(os.path.dirname(__file__), 'cat_dog_model.h5')
+    MODEL_PATH = os.path.join(os.path.dirname(__file__), 'cat_dog_model.tflite')
     ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'bmp'}
 
-def load_trained_model(model_path: str) -> Optional[Model]:
+def load_trained_model(model_path: str) -> Optional[Interpreter]:
     """Load the pre-trained model from the specified path."""
     if not os.path.exists(model_path):
         logger.error(f"Model file not found at {model_path}. The API will not be able to make predictions.")
         return None
     try:
-        model = load_model(model_path)
-        logger.info(f"Model '{model_path}' loaded successfully.")
-        return model
+        interpreter = Interpreter(model_path=model_path)
+        interpreter.allocate_tensors()
+        logger.info(f"TFLite model '{model_path}' loaded successfully.")
+        return interpreter
     except Exception as e:
         logger.error(f"Error loading model: {e}")
         return None
@@ -41,9 +46,9 @@ def preprocess_image(img: Image.Image) -> np.ndarray:
         if img.mode != 'RGB':
             img = img.convert('RGB')
         # Convert to array
-        img_array = image.img_to_array(img)
+        img_array = np.array(img, dtype=np.float32)
         # Rescale pixel values to [0,1]
-        img_array /= 255.0
+        img_array = img_array / 255.0
         # Add batch dimension
         return np.expand_dims(img_array, axis=0)
     except Exception as e:
@@ -97,8 +102,15 @@ def register_routes(app: Flask):
             processed_img = preprocess_image(img)
 
             # Make prediction
-            prediction = app.model.predict(processed_img)
-            confidence = float(prediction[0][0])
+            interpreter = app.model
+            input_details = interpreter.get_input_details()
+            output_details = interpreter.get_output_details()
+
+            interpreter.set_tensor(input_details[0]['index'], processed_img)
+            interpreter.invoke()
+            
+            prediction = interpreter.get_tensor(output_details[0]['index'])
+            confidence = float(prediction[0, 0])
 
             # Interpret result (assuming 1 = dog, 0 = cat based on your training)
             if confidence > 0.5:
@@ -123,11 +135,14 @@ def register_routes(app: Flask):
         if not hasattr(app, 'model') or app.model is None:
             return jsonify({'error': 'Model is not loaded.'}), 503
 
+        interpreter = app.model
+        input_details = interpreter.get_input_details()
+        output_details = interpreter.get_output_details()
+
         try:
             return jsonify({
-                'input_shape': app.model.input_shape,
-                'output_shape': app.model.output_shape,
-                'total_params': int(app.model.count_params()),
+                'input_shape': input_details[0]['shape'].tolist(),
+                'output_shape': output_details[0]['shape'].tolist(),
                 'classes': ['cat', 'dog']
             })
         except Exception as e:
