@@ -145,10 +145,10 @@ def create_app(config_object: Config = Config) -> Flask:
     frontend_url = os.environ.get('FRONTEND_URL')
     if frontend_url:
         logger.info(f"CORS enabled for origin: {frontend_url}")
-        CORS(app, origins=[frontend_url])
+        CORS(app, resources={r"/*": {"origins": frontend_url}}, supports_credentials=True)
     else:
         logger.warning("CORS environment variable 'FRONTEND_URL' not set. Allowing all origins.")
-        CORS(app, origins="*")
+        CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
     # Load the model within the application context to ensure it's available for all workers.
     with app.app_context():
